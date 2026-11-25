@@ -126,7 +126,7 @@ class RAGEngine:
                 # The SDK's default retry delay can make quota failures look like a hang.
                 # The source-backed extractive fallback handles exhausted quotas promptly.
                 retries=0,
-                request_timeout=12.0,
+                request_timeout=8.0,
             )
             return self.model
         except Exception as exc:
@@ -164,7 +164,16 @@ class RAGEngine:
             key = (location, page)
             if key not in seen:
                 seen.add(key)
-                sources.append(Source(str(metadata.get("title") or location), location, str(metadata.get("category") or "general"), page))
+                excerpt = " ".join(document.page_content.split())
+                if len(excerpt) > 320:
+                    excerpt = excerpt[:317].rstrip() + "..."
+                sources.append(Source(
+                    str(metadata.get("title") or location),
+                    location,
+                    str(metadata.get("category") or "general"),
+                    page,
+                    excerpt,
+                ))
         return tuple(sources)
 
     def prepare(self, question: str, *, category: str | None = None, memory: ConversationMemory | None = None) -> PreparedAnswer:
@@ -227,7 +236,7 @@ class RAGEngine:
                 message = _extractive_answer(
                     question,
                     documents,
-                    prefix="I can’t reach the answer-generation service right now. Here is the relevant text from the university sources: ",
+                    prefix="Relevant text from the university sources: ",
                 )
                 if not message:
                     message = "I’m sorry, the university information service is temporarily unavailable. Please try again shortly."

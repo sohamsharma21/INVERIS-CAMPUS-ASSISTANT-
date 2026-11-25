@@ -34,6 +34,7 @@ class Source:
     location: str
     category: str
     page: int | None = None
+    excerpt: str = ""
 
 
 @contextmanager

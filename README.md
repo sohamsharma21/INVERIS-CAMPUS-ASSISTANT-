@@ -17,7 +17,7 @@ flowchart LR
     E --> F[Gemini embeddings]
     F --> G[(Persistent ChromaDB)]
     H[Streamlit question] --> I[Rewrite follow-up]
-    I --> J[Category-filtered MMR retrieval]
+    I --> J[Category-filtered hybrid BM25 + vector/MMR retrieval]
     G --> J
     J --> K{Evidence confidence?}
     K -- Low / empty --> L[Safe official-site fallback]
@@ -61,6 +61,25 @@ Requires Python 3.11 or newer.
 6. Start the chat app: `streamlit run app.py`.
 7. Run tests without a live API key: `pytest -q`.
 
+### Deploying to Streamlit Community Cloud
+
+1. Push this repository to GitHub and open Streamlit Community Cloud.
+2. Create an app from this repository, select `main` and `app.py`.
+3. In the app's **Settings → Secrets**, add:
+
+   ```toml
+   GOOGLE_API_KEY = "your-google-ai-studio-key"
+   ADMIN_PASSWORD = "a-unique-strong-password"
+   ENABLE_GEMINI = "false"
+   ENABLE_PDF_OCR = "true"
+   OCR_LANGUAGE = "eng"
+   ENABLE_CRAWL_SCHEDULE = "false"
+   ```
+
+4. Deploy, open the **Admin** tab, enter the admin password and select **Trigger re-indexing** to crawl allowed pages and build the cloud instance index.
+
+The app reads Streamlit Cloud Secrets as environment-backed settings. Cloud storage may be ephemeral; rebuild the index after a fresh deployment/restart if it is missing. Scheduled crawling is disabled by default because Streamlit Community Cloud does not provide a persistent background scheduler. Tesseract is not bundled on the cloud host, so OCR requires a custom deployment image; text-based PDFs continue to work.
+
 ### Refreshing data
 
 Run `python -m invertis_bot.ingest --rebuild --refresh-cache` to clear the page cache and rebuild from fresh public pages plus local documents. A rebuild requires working Google Gemini embeddings. The cache reduces repeated requests; delay and page cap can be configured in `.env`.
@@ -68,6 +87,8 @@ Run `python -m invertis_bot.ingest --rebuild --refresh-cache` to clear the page 
 ### Configuration
 
 Settings are in `.env.example` and validated by Pydantic. Model IDs, crawl delay/timeouts/page cap, chunk size/overlap, retrieval category/top-k/confidence threshold, memory length, database and data locations are configurable. The index and data paths default to the project `data/` directory.
+
+Retrieval combines category-filtered vector/MMR candidates with BM25 keyword ranking, then fuses the ranked lists. This improves exact programme names, fees, dates, and other keyword-heavy questions while keeping semantic matches available.
 
 `ENABLE_GEMINI=true` uses Gemini for fluent answer generation. Set it to `false` to use immediate extractive answers from retrieved source passages when Gemini is unavailable or its free-tier quota is exhausted. Citations remain visible in either mode.
 
@@ -91,7 +112,7 @@ The Admin tab asks for the `ADMIN_PASSWORD` configured in `.env`. Authorized use
 ## Safety and limitations
 
 - Only public same-host HTML URLs are crawled; robots rules are checked before each request. Linked file downloads are not automatically crawled. Add official PDFs manually when appropriate.
-- Text-only PDF extraction cannot read image-only/scanned PDFs; OCR is not included.
+- Scanned/image-only PDFs use optional OCR fallback when Tesseract is installed. On Windows install Tesseract, then set `OCR_LANGUAGE=eng+hin` (English and Hindi) or another Tesseract language code.
 - Website changes, blocked networks, Gemini availability/quotas, and embedding API changes can affect ingestion and chat.
 - Retrieval thresholds are heuristic; validate citations and adjust using the university corpus.
 - Prompt injection in user questions and retrieved content is explicitly treated as untrusted. This is a student project, not an official university system.

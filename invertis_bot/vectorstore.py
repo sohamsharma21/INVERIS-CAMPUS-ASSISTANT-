@@ -7,6 +7,7 @@ import hashlib
 import math
 import re
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,7 @@ class VectorStoreManager:
         self._embeddings = embeddings
         self._embedding_backend: str | None = None
         self._store: Any | None = None
+        self._corpus_cache: list[Document] | None = None
 
     def _get_embeddings(self, backend: str | None = None) -> Any:
         """Construct Gemini embeddings on demand, avoiding API setup in unit tests."""
@@ -116,6 +118,7 @@ class VectorStoreManager:
             if self.settings.index_dir.exists() and not rebuild:
                 self._store = self.load()
                 self._store.add_documents(documents)
+                self._corpus_cache = None
                 logger.info("Added %d chunks to %s", len(documents), self.settings.index_dir)
                 return len(documents)
 
@@ -132,6 +135,7 @@ class VectorStoreManager:
             if rebuild:
                 # Chroma can retain SQLite file handles on Windows; avoid renaming open DB folders.
                 self._store = None
+                self._corpus_cache = None
                 shutil.rmtree(self.settings.index_dir, ignore_errors=True)
             self.settings.index_dir.mkdir(parents=True, exist_ok=True)
             try:
@@ -193,33 +197,140 @@ class VectorStoreManager:
             raise LLMError(f"Could not load Chroma index: {exc}") from exc
 
     def search(self, query: str, *, top_k: int | None = None, category: str | None = None) -> list[Document]:
-        """Retrieve relevant chunks with maximal marginal relevance and optional filter."""
+        """Fuse semantic MMR candidates with BM25 keyword matches."""
         store = self.load()
         filter_query = {"category": category} if category and category != "all" else None
-        return store.max_marginal_relevance_search(
+        result_limit = top_k or self.settings.retrieval_top_k
+        candidate_count = max(result_limit * 3, 10)
+        semantic_documents = store.max_marginal_relevance_search(
             query,
-            k=top_k or self.settings.retrieval_top_k,
-            fetch_k=max((top_k or self.settings.retrieval_top_k) * 3, 10),
+            k=candidate_count,
+            fetch_k=max(candidate_count * 2, 20),
             filter=filter_query,
+        )
+        keyword_documents = self._keyword_search(query, category=category, limit=candidate_count)
+        return _reciprocal_rank_fusion(
+            (semantic_documents, keyword_documents),
+            limit=result_limit,
+            weights=(1.0, 1.25),
         )
 
     def confidence(self, query: str, *, category: str | None = None) -> float:
-        """Estimate best-match relevance in the [0, 1] scale used by Chroma."""
+        """Combine semantic relevance with lexical coverage for hybrid retrieval."""
         store = self.load()
         filter_query = {"category": category} if category and category != "all" else None
-        # Hashed bag-of-words vectors are intentionally less semantic. Combine their
-        # similarity with lexical coverage so directly relevant passages pass the
-        # threshold while unrelated top-k hits still fall back.
+        keyword_documents = self._keyword_search(query, category=category, limit=3)
+        lexical_score = _lexical_coverage(query, keyword_documents)
         if self._embedding_backend == "local":
-            documents = store.similarity_search(query, k=3, filter=filter_query)
-            return _lexical_coverage(query, documents)
+            return lexical_score
 
         scored = store.similarity_search_with_relevance_scores(query, k=3, filter=filter_query)
-        return max((max(0.0, min(1.0, float(item[1]))) for item in scored), default=0.0)
+        semantic_score = max((max(0.0, min(1.0, float(item[1]))) for item in scored), default=0.0)
+        return max(semantic_score, lexical_score * 0.75)
+
+    def _keyword_search(
+        self,
+        query: str,
+        *,
+        category: str | None = None,
+        limit: int,
+    ) -> list[Document]:
+        """Rank the cached Chroma corpus with BM25, respecting category filters."""
+        query_terms = _canonical_terms(query)
+        if not query_terms:
+            return []
+        store = self.load()
+        if self._corpus_cache is None:
+            payload = store.get(include=["documents", "metadatas"])
+            contents = payload.get("documents") or []
+            metadata_rows = payload.get("metadatas") or [{} for _ in contents]
+            self._corpus_cache = [
+                Document(page_content=content, metadata=metadata or {})
+                for content, metadata in zip(contents, metadata_rows)
+                if content
+            ]
+        candidates = [
+            document
+            for document in self._corpus_cache
+            if not category or category == "all" or document.metadata.get("category") == category
+        ]
+        return [
+            document
+            for document, _ in _bm25_rank(query_terms, candidates)[:limit]
+        ]
 
     def get_store(self) -> Any:
         """Expose the loaded underlying vector store for advanced integrations."""
         return self.load()
+
+
+def _bm25_rank(query_terms: set[str], documents: list[Document]) -> list[tuple[Document, float]]:
+    """Return BM25-ranked documents for a normalized query term set."""
+    if not query_terms or not documents:
+        return []
+    token_rows = [
+        _canonical_tokens(
+            document.page_content + " " + str(document.metadata.get("title", ""))
+        )
+        for document in documents
+    ]
+    document_frequencies: Counter[str] = Counter()
+    term_frequencies: list[Counter[str]] = []
+    for terms in token_rows:
+        frequencies = Counter(terms)
+        term_frequencies.append(frequencies)
+        document_frequencies.update(frequencies.keys())
+
+    average_length = sum(map(len, token_rows)) / len(token_rows) or 1.0
+    document_count = len(documents)
+    k1, b = 1.5, 0.75
+    ranked: list[tuple[Document, float]] = []
+    for document, terms, frequencies in zip(documents, token_rows, term_frequencies):
+        length = len(terms)
+        score = 0.0
+        for term in query_terms:
+            frequency = frequencies.get(term, 0)
+            if not frequency:
+                continue
+            inverse_frequency = math.log(
+                1.0 + (document_count - document_frequencies[term] + 0.5)
+                / (document_frequencies[term] + 0.5)
+            )
+            denominator = frequency + k1 * (1.0 - b + b * length / average_length)
+            score += inverse_frequency * frequency * (k1 + 1.0) / denominator
+        if score > 0.0:
+            ranked.append((document, score))
+    ranked.sort(key=lambda result: result[1], reverse=True)
+    return ranked
+
+
+def _document_key(document: Document) -> tuple[str, str, str, str]:
+    """Build a stable key so vector and lexical lists can be merged."""
+    metadata = document.metadata
+    return (
+        document.page_content,
+        str(metadata.get("url") or metadata.get("source") or ""),
+        str(metadata.get("page") or ""),
+        str(metadata.get("start_index") or ""),
+    )
+
+
+def _reciprocal_rank_fusion(
+    rankings: tuple[list[Document], ...],
+    *,
+    limit: int,
+    weights: tuple[float, ...],
+) -> list[Document]:
+    """Merge ranked result lists without comparing incompatible raw scores."""
+    fused_scores: dict[tuple[str, str, str, str], float] = {}
+    documents_by_key: dict[tuple[str, str, str, str], Document] = {}
+    for ranking, weight in zip(rankings, weights):
+        for position, document in enumerate(ranking, start=1):
+            key = _document_key(document)
+            documents_by_key.setdefault(key, document)
+            fused_scores[key] = fused_scores.get(key, 0.0) + weight / (60 + position)
+    ordered = sorted(fused_scores, key=fused_scores.__getitem__, reverse=True)
+    return [documents_by_key[key] for key in ordered[:limit]]
 
 
 def _lexical_coverage(query: str, documents: list[Document]) -> float:
@@ -239,6 +350,11 @@ def _lexical_coverage(query: str, documents: list[Document]) -> float:
 
 def _canonical_terms(text: str) -> set[str]:
     """Map common Hindi/Hinglish and English variants to shared retrieval terms."""
+    return set(_canonical_tokens(text))
+
+
+def _canonical_tokens(text: str) -> list[str]:
+    """Return canonical retrieval tokens while preserving term frequency."""
     stop_words = {"के", "लिए", "कैसे", "करें", "में", "का", "की", "को", "है", "हैं", "क्या"}
     aliases = {
         "admissions": "admission", "apply": "application", "applying": "application",
@@ -254,11 +370,11 @@ def _canonical_terms(text: str) -> set[str]:
         "पात्रता": "eligibility", "योग्यता": "eligibility", "विभाग": "department",
         "कब": "date", "कहां": "location", "कहाँ": "location",
     }
-    return {
+    return [
         aliases.get(token, token)
         for token in _tokens(text)
         if token not in stop_words
-    }
+    ]
 
 
 def _tokens(text: str) -> list[str]:

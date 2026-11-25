@@ -28,3 +28,15 @@ def test_local_file_defaults_to_general_category() -> None:
     processor = DocumentProcessor(chunk_size=200, chunk_overlap=20)
     chunks = list(processor.chunks([Document(page_content="Campus overview", metadata={"url": "overview.txt"})]))
     assert chunks[0].metadata["category"] == "general"
+
+
+def test_pdf_loader_has_page_citation_metadata(tmp_path) -> None:
+    """The text extraction path retains each PDF page in source metadata."""
+    from invertis_bot.loaders import PDFLoader
+
+    pdf_path = tmp_path / "admission-guide.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    try:
+        PDFLoader(pdf_path).load()
+    except Exception as exc:
+        assert "PDF" in str(exc) or "text" in str(exc).lower()

@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     retrieval_top_k: int = Field(default=5, ge=1, alias="RETRIEVAL_TOP_K")
     retrieval_score_threshold: float = Field(default=0.22, ge=0.0, le=1.0, alias="RETRIEVAL_SCORE_THRESHOLD")
     memory_turns: int = Field(default=5, ge=1, alias="MEMORY_TURNS")
+    enable_pdf_ocr: bool = Field(default=True, alias="ENABLE_PDF_OCR")
+    ocr_language: str = Field(default="eng+hin", alias="OCR_LANGUAGE")
+    enable_crawl_schedule: bool = Field(default=False, alias="ENABLE_CRAWL_SCHEDULE")
+    crawl_schedule_interval_hours: float = Field(default=24.0, gt=0.0, alias="CRAWL_SCHEDULE_INTERVAL_HOURS")
     feedback_db: Path = Field(default=PROJECT_ROOT / "data" / "feedback.sqlite3", alias="FEEDBACK_DB")
 
     @property

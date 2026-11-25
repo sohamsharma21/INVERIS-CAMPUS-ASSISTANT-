@@ -53,7 +53,7 @@ class WebLoader(BaseLoader):
 
 
 class PDFLoader(BaseLoader):
-    """Extract text page-by-page from a local PDF while keeping page citations."""
+    """Extract text page-by-page, with optional OCR for image-only scanned pages."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -63,20 +63,63 @@ class PDFLoader(BaseLoader):
         try:
             reader = PdfReader(str(self.path))
             documents: list[Document] = []
+            ocr_engine = self._ocr_engine()
             for page_number, page in enumerate(reader.pages, start=1):
                 content = (page.extract_text() or "").strip()
+                if not content and ocr_engine is not None:
+                    content = ocr_engine(page_number)
                 if content:
                     documents.append(Document(
                         page_content=content,
                         metadata={"url": str(self.path.resolve()), "title": self.path.name, "category": category_for_path(self.path), "page": page_number},
                     ))
             if not documents:
-                raise DocumentLoadError(f"No extractable text found in {self.path}")
+                raise DocumentLoadError(
+                    f"No extractable text found in {self.path}. Install Tesseract OCR "
+                    "and OCR language packs, or add a text-based PDF."
+                )
             return documents
         except Exception as exc:
             if isinstance(exc, DocumentLoadError):
                 raise
             raise DocumentLoadError(f"Could not parse PDF {self.path}: {exc}") from exc
+
+    def _ocr_engine(self):
+        """Return a page OCR callable when OCR is configured and dependencies exist."""
+        try:
+            from invertis_bot.config import get_settings
+            settings = get_settings()
+            if not settings.enable_pdf_ocr:
+                return None
+            import pypdfium2 as pdfium
+            import pytesseract
+
+            installed_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+            if installed_tesseract.exists():
+                pytesseract.pytesseract.tesseract_cmd = str(installed_tesseract)
+
+            pdf = pdfium.PdfDocument(str(self.path))
+            page_count = len(pdf)
+
+            def ocr_page(page_number: int) -> str:
+                if page_number < 1 or page_number > page_count:
+                    return ""
+                page = pdf[page_number - 1]
+                bitmap = page.render(scale=2.0)
+                image = bitmap.to_pil()
+                try:
+                    language = settings.ocr_language
+                    if "+hin" in language:
+                        hindi_model = Path(r"C:\Program Files\Tesseract-OCR\tessdata\hin.traineddata")
+                        if not hindi_model.exists():
+                            language = "eng"
+                    return pytesseract.image_to_string(image, lang=language).strip()
+                except pytesseract.TesseractNotFoundError:
+                    return ""
+
+            return ocr_page
+        except (ImportError, ModuleNotFoundError, OSError):
+            return None
 
 
 def category_for_url(url: str) -> str:

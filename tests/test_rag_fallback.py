@@ -54,6 +54,7 @@ def test_answer_includes_source_citation_and_uses_fake_llm() -> None:
     assert "four years" in result.answer
     assert result.sources[0].location.endswith("/sample")
     assert result.sources[0].category == "courses"
+    assert "four years" in result.sources[0].excerpt
 
 
 def test_conversation_memory_keeps_last_n_exchanges() -> None:
@@ -101,6 +102,7 @@ def test_generation_failure_returns_extractive_source_answer() -> None:
         settings=Settings(enable_gemini=True),
     ).answer("How long is the programme?")
     assert result.found is True
-    assert "relevant text from the university sources" in result.answer
+    assert "Relevant text from the university sources" in result.answer
+    assert "can’t reach the answer-generation service" not in result.answer
     assert "four years" in result.answer
     assert result.sources
