@@ -122,10 +122,3 @@ The Admin tab asks for the `ADMIN_PASSWORD` configured in `.env`. Authorized use
 ## Tests
 
 The pytest suite exercises cleanup/chunk metadata, LRU caching, retries, memory trimming, citation generation, and safe low-confidence fallbacks using fake retrievers and model doubles. No real API key is needed.
-<<<<<<< HEAD
-
-## Support
-
-If you find this project useful, consider giving the repository a ⭐ on GitHub.
-=======
->>>>>>> b0271c334caaac4724d539da2c1b58d4c95cc7e5
