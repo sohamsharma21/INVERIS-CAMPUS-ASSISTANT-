@@ -1,4 +1,4 @@
-# INVERIS-CAMPUS-ASSISTANT-
+# INVERIS-CAMPUS-ASSISTANT
 
 # Invertis Campus Assistant
 
