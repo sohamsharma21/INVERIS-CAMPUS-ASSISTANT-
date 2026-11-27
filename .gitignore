@@ -1,0 +1,19 @@
+# Secrets and local environment
+.env
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Runtime data and local indexes
+data/raw/.cache/
+data/raw/*.json
+data/index/
+data/index.staging/
+data/index.backup/
+data/feedback.sqlite3
+
+# User-provided materials may contain private or licensed content
+data/documents/*
+!data/documents/.gitkeep
